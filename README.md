@@ -195,6 +195,10 @@ All data generated in this study and all benchmark analysis scripts and source c
 
 We welcome contributions! Please feel free to submit issues, feature requests, or pull requests.
 
+## Acknowledgements
+
+We thank Mustafa Malkoç, Emre Kısacık, and Tolga Ergüner for carefully running the PHACE pipeline and providing helpful usability and documentation feedback, with special thanks to Mustafa Malkoç for extensive testing.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
