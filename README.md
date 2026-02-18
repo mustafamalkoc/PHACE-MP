@@ -1,210 +1,285 @@
+# PHACE for concatenated multi‑protein MSAs with artificial‑gap masking (PHACE-MultiProteins)
 
-#  PHACE: Phylogeny-Aware Detection of Molecular Coevolution
+This repository contains a **modified PHACE** pipeline that can run on a **single concatenated MSA** composed of multiple protein MSAs (protein “blocks”), while **discarding false signal introduced by artificial gap blocks** (i.e., blocks filled with gaps because a species lacks the ortholog for that protein).
 
+In the original PHACE workflow, gaps (`-`) in the alignment can be interpreted as real evolutionary events. In a concatenated multi‑protein MSA, however, entire protein blocks can be gaps purely due to *missing orthologs* (not biological indels). This version prevents those artificial gaps from contributing to tolerance scoring and coevolution scoring.
 
-The coevolution trends of amino acids within or between genes offer valuable insights into protein structure and function. Existing tools for uncovering
-coevolutionary signals primarily rely on multiple sequence alignments (MSAs), often neglecting considerations of phylogenetic relatedness and shared 
-evolutionary history. 
+---
 
-Here, we present a novel approach based on the substitution mapping of amino acid changes onto the phylogenetic tree. We categorize 
-amino acids into two groups: 'tolerable' and 'intolerable,' assigned to each position based on the position dynamics concerning the observed amino acids. 
-Amino acids deemed 'tolerable' are those observed phylogenetically independently and multiple times at a specific position, signifying the position's 
-tolerance to that alteration. Gaps are regarded as a third character type, and we only take phylogenetically independent altered gap characters into 
-consideration. 
+## What’s new compared to original PHACE
 
-Our algorithm is based on a tree traversal process through the nodes and computes the total amount of substitution per branch based on 
-the probability differences of two groups of amino acids and gaps between neighboring nodes. To mitigate false coevolution signals from unaligned regions, 
-we employ an MSA-masking approach. 
+### 1) Metadata‑driven masking (two required files)
+You must provide:
 
-When compared to tools utilizing phylogeny (e.g., CAPS and CoMap) and state-of-the-art MSA-based approaches (DCA, GaussDCA, 
-PSICOV, and MIp), our method exhibits significantly superior accuracy in identifying coevolving position pairs, as measured by statistical metrics including 
-MCC, AUC, and F1 score. The success of PHACE stems from our capacity to account for the often-overlooked phylogenetic dependency.
+1. **Ortholog presence table** (`ortholog_selection_table.tsv`)
+   - **Rows:** species names (must match tree tip labels)
+   - **Columns:** protein identifiers (must match boundary file protein names)
+   - **Cells:** non‑empty = ortholog present; empty/NA = ortholog missing (artificial gap block)
 
-![Outline of the PHACE algorithm](https://github.com/CompGenomeLab/PHACE/raw/main/Outline.png)
-                                                    **Figure 1. Outline of the PHACE algorithm**
-PHACE utilizes the original MSA and ML phylogenetic tree to cluster amino acids into "tolerable" and "intolerable" groups, resulting in MSA1. To address issues with gapped leaves and obtain accurate coevolution signals, MSA2 is created to distinguish amino acids from gaps. This information is used to update substitution rates per branch from MSA1. The final MSA is used to construct a matrix detailing changes per branch per position and branch diversity. PHACE score is calculated using a weighted concordance correlation coefficient. (Pos. 126-130, distance: 6.54)
+2. **Protein boundary map** (`proteinBoundriesForMSA.csv` / `.txt`)
+   - Maps concatenated MSA coordinates to protein blocks
+   - Must include (at minimum): `protein_name` (or `protein_id`), `start`, `end`
+   - Coordinates are **1‑based, inclusive**, in the concatenated alignment.
 
-## System Requirements
+### 2) Artificial gaps are treated as missing data (upstream)
+When a species lacks the ortholog for the protein block containing a position, this version encodes that position as **`?`** (missing) in **MSA1** and **MSA2** encodings *for that species only* (dynamic, per position / per pair).
 
-- **R** (version 3.6 or higher)
-- **IQ-TREE2** for Ancestral Sequence Reconstruction (ASR)
-- **Linux/Unix environment** (recommended for optimal performance)
+### 3) Missing‑data short‑circuit in change matrices
+In `coev_diff_MSA1.R` and `coev_diff_MSA2.R`, if either parent or child ancestral state is `?`, the branch is forced to **“no change”** for that position (diff=0, change label `"--"`, etc.). This prevents spurious change labels like `C?`, `A?`, etc.
 
-## Installation
+### 4) Pairwise scoring masks leaf **and internal** branches
+For a position pair `(i1, i2)` mapping to proteins `(P1, P2)`:
 
-### 1. Install Required R Packages
+- Species missing **P1 or P2** are masked (they contribute zero).
+- Additionally, **any internal branch whose descendant subtree contains zero species that have both orthologs** is masked (branch weight set to 0 and per‑branch diffs zeroed).
 
-```r
-# Core PHACE dependencies
-install.packages(c("ape", "Biostrings", "tidytree", "stringr", "dplyr", "bio3d", "mltools", "irr"))
+### 5) Strict MSA ↔ tree consistency
+Whenever a script reads both an MSA and a tree, the MSA is reordered to match `tree$tip.label` and the pipeline errors if the sets differ.
 
-# Install Bioconductor packages
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install(c("Biostrings"))
+---
 
-# Install additional packages for analysis
-install.packages(c("ggplot2", "ggsignif", "cowplot", "AUC", "PRROC", "caret", "spaa", "tidyr", "broom", "RColorBrewer", "gridExtra", "Peptides"))
+## Directory layout expected by the scripts
+
+The scripts follow the same folder conventions as original PHACE. Typical layout:
+
+```
+PHACE_Codes/
+  ToleranceScore.R
+  MSA1.R
+  MSA2.R
+  Part1_MSA1.R
+  Part1_MSA2.R
+  coev_diff_MSA1.R
+  coev_diff_MSA2.R
+  GetTotalChangeMatrix.R
+  PHACE_parallel.R
+  load_metadata.R
+
+Data/
+  vals_MSA1.txt
+  vals_MSA2.txt
+
+ToleranceScores/
+MSA1/
+MSA2/
+AncestralStates/
+Part1_AC/
+Part1_Gap/
+totalChanges/
+PHACE_scores/<id>/
 ```
 
-### 2. Install IQ-TREE2
+(If a folder does not exist, create it before running the corresponding step.)
 
-Download and install IQ-TREE2 from: https://iqtree.github.io/
+---
 
-### 3. Clone the Repository
+## Inputs you need
+
+At minimum:
+
+- **Concatenated AA alignment** (FASTA)
+- **Tree** (Newick / IQ‑TREE `.treefile`) with tip labels matching MSA sequence names
+- **IQ‑TREE `.state`** output (for tolerance scoring step; see below)
+- **Ortholog presence table** (`.tsv`)
+- **Protein boundaries** (`.csv`/`.txt`)
+
+For ASR of MSA1 and MSA2 you will also use:
+- `Data/vals_MSA1.txt`
+- `Data/vals_MSA2.txt`
+
+> If you already have a concatenated‑alignment ML tree and partitioning scheme (per protein block), you can reuse that scheme for MSA1/MSA2 because these encodings preserve alignment length and coordinates.
+
+---
+
+## Step‑by‑step workflow
+
+Below, `<id>` is your analysis identifier (used as filename prefix), and paths are examples.
+
+### Step 0 — (Optional) Create folders
+```
+mkdir -p ToleranceScores MSA1 MSA2 AncestralStates Part1_AC Part1_Gap totalChanges PHACE_scores/<id>
+```
+
+### Step 1 — Tolerance scores (AA MSA + tree + ASR .state)
+
+**Command**
+```bash
+Rscript PHACE_Codes/ToleranceScore.R \
+  <id> \
+  <concatenated_AA.fasta> \
+  <tree.treefile> \
+  <AA_ASR.state> \
+  <boundaries.csv> \
+  <ortholog_selection_table.tsv>
+```
+
+**Output**
+- `ToleranceScores/<id>.csv`
+
+> Note: This step is the only one that needs the AA ASR `.state` file.
+
+---
+
+### Step 2 — Build MSA1 encoding (C/A/-/?) and run ASR
+
+**Build MSA1**
+```bash
+Rscript PHACE_Codes/MSA1.R \
+  <id> \
+  <concatenated_AA.fasta> \
+  <boundaries.csv> \
+  <ortholog_selection_table.tsv>
+```
+
+**Output**
+- `MSA1/<id>_MSA1.fasta`
+
+**Run IQ‑TREE2 ASR on MSA1**
+```bash
+iqtree2 -s MSA1/<id>_MSA1.fasta -te <tree.treefile> -blfix \
+  -m Data/vals_MSA1.txt -asr --prefix AncestralStates/<id>_MSA1 --safe
+```
+
+This produces:
+- `AncestralStates/<id>_MSA1.state`
+- `AncestralStates/<id>_MSA1.treefile` (and other IQ‑TREE outputs)
+
+---
+
+### Step 3 — Build MSA2 encoding (C/G/?) and run ASR
+
+**Build MSA2**
+```bash
+Rscript PHACE_Codes/MSA2.R \
+  <id> \
+  <concatenated_AA.fasta> \
+  <boundaries.csv> \
+  <ortholog_selection_table.tsv>
+```
+
+**Output**
+- `MSA2/<id>_MSA2.fasta`
+
+**Run IQ‑TREE2 ASR on MSA2**
+```bash
+iqtree2 -s MSA2/<id>_MSA2.fasta -te <tree.treefile> -blfix \
+  -m Data/vals_MSA2.txt -asr --prefix AncestralStates/<id>_MSA2 --safe
+```
+
+---
+
+### Step 4 — Build per‑position change matrices
+
+**MSA1 (amino‑acid change mapping)**
+```bash
+Rscript PHACE_Codes/Part1_MSA1.R <id>
+```
+
+**MSA2 (gap change mapping)**
+```bash
+Rscript PHACE_Codes/Part1_MSA2.R <id>
+```
+
+Outputs go to:
+- `Part1_AC/`
+- `Part1_Gap/`
+
+---
+
+### Step 5 — Merge MSA1 + MSA2 into TotalChange matrix
 
 ```bash
-git clone https://github.com/CompGenomeLab/PHACE.git
-cd PHACE
+Rscript PHACE_Codes/GetTotalChangeMatrix.R <id>
 ```
 
-## Repository Structure
+Output:
+- `totalChanges/<id>_TotalChange.RData`
 
+---
+
+### Step 6 — Compute PHACE coevolution scores (parallel / SLURM array)
+
+`PHACE_parallel.R` is designed to be run as a job array. Arguments:
+
+1. `<id>`
+2. `<array_task_id>` (1‑based)
+3. `<num_jobs>` (total array size)
+4. `<ortholog_selection_table.tsv>`
+5. `<boundaries.csv>`
+6. `<concatenated_AA.fasta>` (original AA fasta; used for position→protein mapping)
+
+Example (single task):
+```bash
+Rscript PHACE_Codes/PHACE_parallel.R \
+  <id> \
+  1 \
+  100 \
+  <ortholog_selection_table.tsv> \
+  <boundaries.csv> \
+  <concatenated_AA.fasta>
 ```
-PHACE/
-├── PHACE_Codes/           # Main PHACE implementation scripts
-│   ├── ToleranceScore.R   # Calculate tolerance scores
-│   ├── MSA1.R            # Generate MSA1
-│   ├── MSA2.R            # Generate MSA2
-│   ├── Part1_MSA1.R      # Process MSA1 results
-│   ├── Part1_MSA2.R      # Process MSA2 results
-│   ├── GetTotalChangeMatrix.R # Merge matrices
-│   ├── PHACE.R           # Main PHACE algorithm
-│   └── position_score.R  # Defines position_score() used by ToleranceScore.R
-├── Data/                  # Configuration files
-│   ├── vals_MSA1.txt     # MSA1 substitution model
-│   └── vals_MSA2.txt     # MSA2 substitution model
-├── AnalysisCodes/         # Performance evaluation scripts
-├── ExtraAnalyses/         # Additional analyses and comparisons
-├── ManuscriptFigures/     # Figure generation scripts
-├── OtherTools/           # Comparison tools (CAPS, CoMap, etc.)
-├── PDB/                  # PDB structure analysis
-└── README.md
+
+Outputs:
+- `PHACE_scores/<id>/<id>_PHACE_part<task>.RData`
+
+---
+
+### Step 7 — Merge array parts into final table (Python)
+
+This repo includes `merge_results.py` which merges `PHACE_part*.RData` outputs into a single file and writes:
+- `<id>_PHACE_internalBranchEffectRemoved_scores.feather`
+- `<id>_PHACE_internalBranchEffectRemoved_scores.npz`
+
+Usage:
+```bash
+python merge_results.py <id> <num_parts>
 ```
 
-## Input Requirements
+> Dependencies: `numpy`, `pandas`, `pyreadr`.  
+> If you see a `NameError: sys is not defined`, add `import sys` at the top of `merge_results.py`.
 
-To run PHACE, you need:
-1. **Multiple Sequence Alignment (MSA)** in FASTA format
-2. **Phylogenetic tree** in Newick format
-3. **Ancestral Sequence Reconstruction (ASR)** outputs from IQ-TREE2
+---
 
-For assistance with generating these inputs, please refer to the [PHACT Repository](https://github.com/CompGenomeLab/PHACT).
+## File format requirements (strict)
 
-### Input Format Examples
+### Species naming
+- MSA sequence names must match tree tip labels **exactly**.
+- Species names in `ortholog_selection_table.tsv` must match those as well.
+- This version will error out if the sets differ.
 
-If you are generating these inputs manually, please ensure that the formats are identical to the examples provided in the `SampleInputData` folder. Each file in that folder represents the correct format and structure expected by PHACE.
+### Boundary ↔ ortholog table consistency
+- Boundary `protein_name` values must match the ortholog table column names.
+- If a protein in boundaries is not present as a column in the ortholog table, masking for that protein cannot be applied.
 
-#### `SampleInputData/Q5SRN2_MaskedMSA.fasta`
-Example MSA file used as input.  
+---
 
-#### `SampleInputData/Q5SRN2.treefile`
-Example Newick-format tree.  
+## Troubleshooting
 
-#### `SampleInputData/Q5SRN2.state`
-Example ASR file (IQ-TREE2 `.state` output).  
-This table must have one row per **position × node** combination, and **23 columns** in total:
-Use these files to confirm that your own data (MSA, tree, and ASR output) are correctly formatted before running PHACE.
+### “Protein X not found in ortholog table columns”
+Your boundary file contains a protein name not present in `ortholog_selection_table.tsv` header. Fix by making names identical in both files.
 
+### “species labels do not match tree tip labels”
+Your FASTA rownames and tree tip labels differ. Fix naming (or reorder/rename sequences) so they match exactly.
 
-## How to Obtain PHACE Results
+### Internal node labels missing
+Internal‑branch masking requires that `totalChanges` branch labels can be mapped to tree nodes. In typical runs, `mat_info[,2]` contains tip labels and internal node labels. If your tree lacks internal node labels, you must either label internal nodes or change the mapping strategy.
 
-Here, we assume you have MSA, a phylogenetic tree, and ASR outputs for the protein of interest.
+---
 
-### Step-by-Step Workflow
+## Naming suggestions
 
-#### Step 1: MSA1 Processing
+If you want to rename this fork, here are options that communicate “multi‑protein concatenation + masking” clearly:
 
-1. **Calculate tolerance scores** per amino acid per position using [ToleranceScore.R](https://github.com/CompGenomeLab/PHACE/blob/main/PHACE_Codes/ToleranceScore.R).
+- **PHACE‑MP** (Multi‑Protein)
+- **PHACE‑Concat**
+- **PHACE‑Blocks**
+- **PHACE‑Mask**
+- **PHACE‑MultiMSA**
+- **PHACE‑Extended**
 
-2. **Generate MSA1** using [MSA1.R](https://github.com/CompGenomeLab/PHACE/blob/main/PHACE_Codes/MSA1.R), which comprises three characters:
-   - C (dominant amino acids)
-   - A (alternate amino acids) 
-   - - (gap)
+Pick one; keep “PHACE” in the name so users recognize the lineage.
 
-3. **Perform Ancestral Sequence Reconstruction (ASR)** with IQ-TREE2:
-   ```bash
-   iqtree2 -s ${file_fasta} -te ${file_nwk} -blfix -m Data/vals_MSA1.txt -asr --prefix ${id}_MSA1 --safe
-   ```
+---
 
-4. **Construct the initial matrix** using [Part1_MSA1.R](https://github.com/CompGenomeLab/PHACE/blob/main/PHACE_Codes/Part1_MSA1.R) to account for total changes per branch over MSA1.
-
-#### Step 2: MSA2 Processing
-
-1. **Generate MSA2** using [MSA2.R](https://github.com/CompGenomeLab/PHACE/blob/main/PHACE_Codes/MSA2.R), which includes two characters:
-   - C (all amino acids)
-   - G (gap)
-
-2. **Execute ASR** for MSA2:
-   ```bash
-   iqtree2 -s ${file_fasta} -te ${file_nwk} -blfix -m Data/vals_MSA2.txt -asr --prefix ${id}_MSA2 --safe
-   ```
-
-3. **Develop the secondary matrix** using [Part1_MSA2.R](https://github.com/CompGenomeLab/PHACE/blob/main/PHACE_Codes/Part1_MSA2.R) to identify independent gap alterations.
-
-#### Step 3: Final PHACE Calculation
-
-1. **Merge the matrices** obtained from MSA1 and MSA2 using [GetTotalChangeMatrix.R](https://github.com/CompGenomeLab/PHACE/blob/main/PHACE_Codes/GetTotalChangeMatrix.R).
-
-2. **Execute the final PHACE algorithm** using [PHACE.R](https://github.com/CompGenomeLab/PHACE/blob/main/PHACE_Codes/PHACE.R) to obtain PHACE results.
-
-
-## Additional Analyses
-
-### Performance Evaluation
-- **ROC Comparisons**: [AnalysisCodes/ROC_Comparisons.R](https://github.com/CompGenomeLab/PHACE/blob/main/AnalysisCodes/ROC_Comparisons.R)
-- **MCC/F1 Score Comparisons**: [AnalysisCodes/MCC_F1Score_Comparisons.R](https://github.com/CompGenomeLab/PHACE/blob/main/AnalysisCodes/MCC_F1Score_Comparisons.R)
-
-### Manuscript Figures
-- **Figure 3**: [ManuscriptFigures/Figure3.R](https://github.com/CompGenomeLab/PHACE/blob/main/ManuscriptFigures/Figure3.R)
-- **Figure 4**: [ManuscriptFigures/Figure4.R](https://github.com/CompGenomeLab/PHACE/blob/main/ManuscriptFigures/Figure4.R)
-- **Figure 5**: [ManuscriptFigures/Figure5.R](https://github.com/CompGenomeLab/PHACE/blob/main/ManuscriptFigures/Figure5.R)
-
-### Comparison Tools
-The `OtherTools/` directory contains implementations of comparison methods:
-- **CAPS**: Coevolution analysis using protein sequences
-- **CoMap**: Detecting groups of coevolving positions
-- **DCA**: Direct-coupling analysis
-- **GaussDCA**: Multivariate Gaussian modeling
-- **MIp**: Mutual information without phylogeny influence
-- **PSICOV**: Precise structural contact prediction
-
-See [OtherTools/README.md](https://github.com/CompGenomeLab/PHACE/blob/main/OtherTools/README.md) for detailed information.
-
-### Extra Analyses
-Additional analyses conducted in response to reviewer suggestions are available in the `ExtraAnalyses/` directory:
-- **AUPR Comparisons**: Precision-recall analysis
-- **MSA Categorization**: Performance across different MSA characteristics
-- **CoMap Pairwise Analysis**: Comparison of CoMap versions
-
-See [ExtraAnalyses/README.md](https://github.com/CompGenomeLab/PHACE/blob/main/ExtraAnalyses/README.md) for details.
-
-## Results
-
-Result for 652 proteins is provided in Figure 2.
-
-![Result](https://github.com/CompGenomeLab/PHACE/raw/main/Result.png)
-                              **Figure 2. Comparison of all tools over a common set in terms of AUC**
-
-
-## Data Availability
-
-All data generated in this study and all benchmark analysis scripts and source codes for PHACE are available at https://github.com/CompGenomeLab/PHACE. The PHACE predictions for the 652 proteins used in this manuscript are provided at [https://zenodo.org/records/14038143](https://zenodo.org/records/14043199).
-
-## Contributing
-
-We welcome contributions! Please feel free to submit issues, feature requests, or pull requests.
-
-## Acknowledgements
-
-We thank Mustafa Malkoç, Emre Kısacık, and Tolga Ergüner for carefully running the PHACE pipeline and providing helpful usability and documentation feedback, with special thanks to Mustafa Malkoç for extensive testing.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Citing this work
-
-Kuru N., Adebali O. (2025). PHACE: Phylogeny-Aware Detection of Molecular Coevolution. Molecular Biology and Evolution, 42(7), msaf150. 
-https://doi.org/10.1093/molbev/msaf150
-
+## Citation
+If you use PHACE in published research, cite the original PHACE paper / repository, and describe these modifications (multi‑protein concatenation and artificial‑gap masking) in Methods.
