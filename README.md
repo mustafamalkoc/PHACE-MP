@@ -264,22 +264,5 @@ Your FASTA rownames and tree tip labels differ. Fix naming (or reorder/rename se
 ### Internal node labels missing
 Internal‑branch masking requires that `totalChanges` branch labels can be mapped to tree nodes. In typical runs, `mat_info[,2]` contains tip labels and internal node labels. If your tree lacks internal node labels, you must either label internal nodes or change the mapping strategy.
 
----
-
-## Naming suggestions
-
-If you want to rename this fork, here are options that communicate “multi‑protein concatenation + masking” clearly:
-
-- **PHACE‑MP** (Multi‑Protein)
-- **PHACE‑Concat**
-- **PHACE‑Blocks**
-- **PHACE‑Mask**
-- **PHACE‑MultiMSA**
-- **PHACE‑Extended**
-
-Pick one; keep “PHACE” in the name so users recognize the lineage.
-
----
-
 ## Citation
 If you use PHACE in published research, cite the original PHACE paper / repository, and describe these modifications (multi‑protein concatenation and artificial‑gap masking) in Methods.
